@@ -14,7 +14,7 @@ pub struct RustTP {
 struct Client {
     addr: SocketAddr,
     stream: Mutex<TcpStream>,
-
+    datastream: Mutex<Option<TcpStream>>,
 }
 #[allow(dead_code)]
 trait SendResponse {
@@ -29,16 +29,19 @@ trait SendResponse {
     }
     
     fn send150(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+        stream.write(b"150 Opening data connection for file list.\r\n").unwrap();
     }
 
 
     // series 200
     fn send200(stream: &mut TcpStream){
+
         stream.write(b"200 Command Okay\r\n").unwrap();
+        stream.flush().unwrap();
     }
     fn send202(stream: &mut TcpStream){
         stream.write(b"200 Command Okay yay\r\n").unwrap();
+        stream.flush().unwrap();
     }
     
     fn send211(stream: &mut TcpStream){
@@ -90,14 +93,14 @@ trait SendResponse {
         let binding = listener.local_addr().unwrap().ip().to_string();
         let vec: Vec<&str> = binding.split(".").collect();
 
-        let str = format!("227 Entering Passive Mode (127,0,0,1,{},{})\r\n",p1,p2);
+        let str = format!("227 Entering Passive Mode (192,168,0,35,{},{})\r\n",p1,p2);
         //vec[0], vec[1], vec[2],vec[3]
-        print!("port: {:?}",port);
+        print!("port: {:?}\n",port);
         println!("{str}");
         
 
         stream.write(str.as_bytes()).unwrap();
-        stream.flush();
+        stream.flush().unwrap();
         listener
     }
 
@@ -132,6 +135,7 @@ trait SendResponse {
 
     fn send257(stream: &mut TcpStream, path: String){
         stream.write(format!("257 \"{path}\" is directory\r\n").as_bytes()).unwrap();
+        stream.flush();
     }
     
     //series 300
@@ -329,7 +333,7 @@ impl SendResponse for Client{
 impl Client {
     fn new(addr: SocketAddr, stream: TcpStream) -> ArcClient{
         //loop
-        let s = Arc::new(Client {addr, stream: Mutex::new(stream)}) ;
+        let s = Arc::new(Client {addr, stream: Mutex::new(stream), datastream: Mutex::new(None)}) ;
         s.clone().start_event_loop();
         return s;
     }
@@ -368,14 +372,19 @@ impl Client {
                 "REIN" => {},
                 "PORT" => {},
                 "PASV" => {
-                    Client::handle_pasv(stream);
+                    self.clone().handle_pasv(stream);
                 },
                 "TYPE" => {
                     Client::send200(stream);
                 },
                 "STRU" => {},
                 "MODE" => {},
-                "RETR" => {},
+                "RETR" => {
+                    Client::send150(stream);
+                    let data = "hello hello testbytes".as_bytes();
+                    self.clone().send_rudimentary_data(data);
+                    Client::send226(stream);
+                },
                 "STOR" => {},
                 "STOU" => {},
                 "APPE" => {},
@@ -390,7 +399,13 @@ impl Client {
                 "PWD\r" => {
                     Client::send257(stream, "C:/Users/Downloads".to_string());
                 },
-                "LIST" => {},
+                "LIST" => {
+                    Client::send150(stream);
+                    //send directory data over coolstreams
+                    self.clone().sendDirectoryInfo();
+                    Client::send226(stream);
+
+                },
                 "NLST" => {},
                 "SITE" => {
                     Client::send502(stream);
@@ -405,17 +420,42 @@ impl Client {
         }
     }
 
-    fn start_file_stream(self: Arc<Self>){
-        
+    fn sendDirectoryInfo(self: Arc<Self>){
+        let mut lock = self.datastream.lock().unwrap();
+
+        if let Some(mut stream) = lock.take() {
+            stream.write(b"-rw-r--r--  1 user group  21 Oct  1 10:00 example.py\r\n").unwrap();
+            stream.flush().unwrap();
+        }
+        drop(lock);
+        self.clone().close_data_stream();
+    }
+
+    fn close_data_stream(self: Arc<Self>){
+        let mut lock = self.datastream.lock().unwrap();
+        if lock.is_some() {
+            lock.take();
+        }
+    }
+    
+    fn send_rudimentary_data(self: Arc<Self>, data: &[u8]){
+        let mut lock = self.datastream.lock().unwrap();
+        if let Some(mut stream) = lock.take() {
+            stream.write(&data).unwrap();
+        }
+        drop(lock);
+
+        self.clone().close_data_stream();
     }
 
 
-    fn handle_pasv(stream: &mut TcpStream){
+    fn handle_pasv(self: Arc<Self>,stream: &mut TcpStream){
        let list = Client::send227(stream);
        println!("stream: started waiting onconnection");
         let mut clie = list.accept().unwrap();
         println!("stream: accepted connection at {:?}",clie.1);
-        Client::send226(stream);
+        self.datastream.lock().unwrap().replace(clie.0);
+        //setConnection create field in Client, mutex<listner>.
     }
 
 
