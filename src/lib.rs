@@ -397,11 +397,13 @@ impl Client {
     }
 
     fn start_event_loop(self: Arc<Self>) {
-        let mut buf: [u8; 1000] = [0; 1000];
+        thread::spawn(move || {
+            let mut buf: [u8; 1000] = [0; 1000];
         let mut stream = self.stream.lock().unwrap();
         Client::send220(&mut stream);
         stream.flush().unwrap();
         let stream = &mut stream;
+        stream.set_read_timeout(Some(Duration::new(10, 0))).unwrap();
         while let Ok(size) = stream.read(&mut buf) {
             let data = &buf[..size];
 
@@ -526,6 +528,8 @@ impl Client {
                 },
             }
         }
+        });
+        
     }
 
     fn sendDirectoryInfo(self: Arc<Self>) {
