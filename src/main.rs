@@ -1,7 +1,7 @@
 use std::{io::{self, Read, Write}, thread::{self, sleep}, time::Duration};
 use rustp::RustTP;
 fn main() {
-    let paths: Vec<String> = vec!("C:/Users/marcu/Documents".to_string(), "C:/Users/marcu/Videos/Desktop".to_string(), "C:/Users/marcu/Videos/Desktop/Desktop 2024.10.18 - 18.42.44.04.DVR.mp4".to_string());
+    let paths: Vec<String> = vec!("C:/Users/marcu/Downloads".to_string(), "C:/Users/marcu/Videos/Desktop".to_string(), "C:/Users/marcu/Videos/Desktop/Desktop 2024.10.18 - 18.42.44.04.DVR.mp4".to_string(), "F:/Anime".to_string());
     let server = RustTP::new_with_paths(paths);
     let mut guess = String::new();
     loop {

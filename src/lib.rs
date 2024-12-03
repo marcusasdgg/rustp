@@ -71,7 +71,7 @@ trait SendResponse {
         stream.write_all(b"202 no action needed\r\n").unwrap();
     }
 
-    fn send211(stream: &mut TcpStream, ) {
+    fn send211(stream: &mut TcpStream) {
         stream.write_all(b"211-Features:\r\nEPSV\r\n211 End\r\n").unwrap();
         stream.flush().unwrap();
     }
@@ -139,8 +139,8 @@ trait SendResponse {
     fn send229(stream: &mut TcpStream) -> TcpListener {
         let listener = TcpListener::bind("0.0.0.0:0").unwrap(); 
         let port = listener.local_addr().unwrap().port();
-        println!("{}", format!("229 Entering Extended Passive Mode (|||{port}|)"));
-        stream.write_all(format!("229 Entering Extended Passive Mode (|||{port}|)").as_bytes()).unwrap();
+        println!("{}", format!("229 (|||{port}|)\r\n"));
+        stream.write_all(format!("229 Entering Extended Passive Mode (|||{port}|)\r\n").as_bytes()).unwrap();
         stream.flush().unwrap();
         listener
     }
@@ -598,12 +598,13 @@ impl Client {
         let relpath = real.unwrap().to_owned() + "/" + &ite.map(|e| e.to_owned() + "/").collect::<String>();
         let s = real.unwrap();
         println!("path foudn now :{} given {s}", relpath);
-        
-        let file = File::open(relpath.trim()).unwrap();
-        let mut buffer = vec![0u8; 8192]; // Define a buffer of size 8 KB
+        let relpath = if relpath.ends_with("/") {relpath.strip_suffix("/").unwrap().to_string()} else {relpath};
+        let file = File::open(relpath).unwrap();
+        let mut buffer = vec![0u8; 32000];
         let mut reader = BufReader::new(file);
         let mut lock = self.datastream.lock().unwrap();
         if let Some(mut stream) = lock.take() {
+            stream.set_nodelay(true).unwrap();
             loop {
                 match reader.read(&mut buffer) {
                     Ok(0) => break, // EOF reached
