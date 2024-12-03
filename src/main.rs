@@ -1,5 +1,5 @@
 use std::{env, fs::File, io::{self, BufRead, Read, Write}, path::Path, thread::{self, sleep}, time::Duration};
-use rusFTP::RustTP;
+use basicftp::RustTP;
 fn main() {
     let args: Vec<String> = env::args().collect();
     let lines = read_lines("paths.txt").unwrap();
