@@ -1,13 +1,26 @@
-use std::io::{Read, Write};
+use std::fmt::format;
+use std::fs::{self, metadata, DirEntry, File};
+use std::io::{BufReader, Read, Write};
 use std::net::IpAddr;
+use std::os::windows::fs::MetadataExt;
+use std::path::Path;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::{ collections::HashMap, net::{SocketAddr, TcpListener, TcpStream}, thread::Thread};
+use std::thread::sleep;
+use std::time::{Duration, UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    net::{SocketAddr, TcpListener, TcpStream},
+    thread::Thread,
+};
+use std::{path, thread};
 
 type ArcClient = Arc<Client>;
 pub struct RustTP {
     server_con: TcpListener,
-    
+
+    //this is a list of top directorys which comprise the / directory of the fs,
+    directories: Arc<Vec<String>>,
     client_addrs: Mutex<HashMap<SocketAddr, ArcClient>>,
 }
 
@@ -15,76 +28,93 @@ struct Client {
     addr: SocketAddr,
     stream: Mutex<TcpStream>,
     datastream: Mutex<Option<TcpStream>>,
+    stream_type: StreamType,
+    current_path: Arc<Mutex<String>>,
+    real_path: Arc<Mutex<String>>,
+    base_directories:  Arc<Vec<String>>,
 }
+
+enum StreamType {
+    ASCII,
+    BINARY,
+    EBCDIC,
+}
+
+static DIRECTORYMODE: i32 = 1;
+
 #[allow(dead_code)]
 trait SendResponse {
-    
     //series 100
-    fn send110(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    fn send110(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
 
-    fn send125(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
-    }
-    
-    fn send150(stream: &mut TcpStream){
-        stream.write(b"150 Opening data connection for file list.\r\n").unwrap();
+    fn send125(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
 
+    fn send150(stream: &mut TcpStream) {
+        stream
+            .write(b"150 Opening data connection for file list.\r\n")
+            .unwrap();
+        stream.flush().unwrap();
+        ;
+    }
 
     // series 200
-    fn send200(stream: &mut TcpStream){
-
-        stream.write(b"200 Command Okay\r\n").unwrap();
+    fn send200(stream: &mut TcpStream) {
+        
+        stream.write_all(b"200 command ok\r\n").unwrap();
         stream.flush().unwrap();
     }
-    fn send202(stream: &mut TcpStream){
-        stream.write(b"200 Command Okay yay\r\n").unwrap();
+    fn send202(stream: &mut TcpStream) {
+        stream.write_all(b"202 no action needed\r\n").unwrap();
+    }
+
+    fn send211(stream: &mut TcpStream, ) {
+        stream.write_all(b"211-Features:\r\nEPSV\r\n211 End\r\n").unwrap();
         stream.flush().unwrap();
     }
-    
-    fn send211(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send212(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
 
-    fn send212(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    fn send213(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
 
-    fn send213(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    fn send214(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
 
-    fn send214(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    fn send215(stream: &mut TcpStream) {
+        stream.write_all(b"215 UNIX Type: L8\r\n").unwrap();
+        stream.flush().unwrap();
     }
 
-    fn send215(stream: &mut TcpStream){
-        stream.write(b"215 Windows_NT\r\n").unwrap();
-    }
-    
-    fn send220(stream: &mut TcpStream){
-        stream.write(b"220 FTP Server ready\r\n").unwrap();
+    fn send220(stream: &mut TcpStream) {
+        stream.write_all(b"220 FTP Server ready\r\n").unwrap();
+        stream.flush().unwrap();
     }
 
-    fn send221(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
-    }
-    
-    fn send225(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
-    }
-    
-    fn send226(stream: &mut TcpStream){
-        stream.write(b"226 Transfer complete\r\n").unwrap();
+    fn send221(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
 
-    fn send227(stream: &mut TcpStream) -> TcpListener{
-    
+    fn send225(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    }
+
+    fn send226(stream: &mut TcpStream) {
+        stream.write_all(b"226 Transfer complete\r\n").unwrap();
+        stream.flush().unwrap();
+    }
+
+    fn send227(stream: &mut TcpStream) -> TcpListener {
         let listener = TcpListener::bind("0.0.0.0:0").unwrap(); // 0.0.0.0 binds to any available IP on a random port
 
-        let port = listener.local_addr().unwrap().port();  // Get the randomly assigned port
+        let port = listener.local_addr().unwrap().port(); // Get the randomly assigned port
 
         // Convert the port to the format required by PASV (p1, p2)
         let p1 = port / 256;
@@ -93,196 +123,205 @@ trait SendResponse {
         let binding = listener.local_addr().unwrap().ip().to_string();
         let vec: Vec<&str> = binding.split(".").collect();
 
-        let str = format!("227 Entering Passive Mode (192,168,0,35,{},{})\r\n",p1,p2);
+        let str = format!("227 Entering Passive Mode (192,168,0,11,{},{})\r\n", p1, p2);
         //vec[0], vec[1], vec[2],vec[3]
-        print!("port: {:?}\n",port);
-        println!("{str}");
-        
+        println!("port is {port}");
 
-        stream.write(str.as_bytes()).unwrap();
+        stream.write_all(str.as_bytes()).unwrap();
         stream.flush().unwrap();
         listener
     }
 
-    fn send228(stream: &mut TcpStream){
+    fn send228(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    }
+
+    fn send229(stream: &mut TcpStream) -> TcpListener {
+        let listener = TcpListener::bind("0.0.0.0:0").unwrap(); 
+        let port = listener.local_addr().unwrap().port();
+        println!("{}", format!("229 Entering Extended Passive Mode (|||{port}|)"));
+        stream.write_all(format!("229 Entering Extended Passive Mode (|||{port}|)").as_bytes()).unwrap();
+        stream.flush().unwrap();
+        listener
+    }
+
+    fn send230(stream: &mut TcpStream) {
+        stream.write_all(b"230 User logged in\r\n").unwrap();
+        stream.flush().unwrap();
+    }
+
+    fn send232(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    }
+
+    fn send234(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    }
+
+    fn send235(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    }
+
+    fn send250(stream: &mut TcpStream) {
+        stream.write_all(b"250 DIRSTYLE set to WINDOWS\r\n").unwrap();
+    }
+
+    fn send257(stream: &mut TcpStream, path: String) {
+        print!("path is {path}");
         stream
-        .write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+            .write(format!("257 \"{path}\" is directory\r\n").as_bytes())
+            .unwrap();
+        stream.flush().unwrap();
+        ;
     }
 
-    fn send229(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
-    }
-
-    fn send230(stream: &mut TcpStream){
-        stream.write(b"230 User logged in, shutup\r\n").unwrap();
-    }
-
-    fn send232(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
-    }
-
-    fn send234(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
-    }
-    
-    fn send235(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
-    }
-    
-    fn send250(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
-    }
-
-    fn send257(stream: &mut TcpStream, path: String){
-        stream.write(format!("257 \"{path}\" is directory\r\n").as_bytes()).unwrap();
-        stream.flush();
-    }
-    
     //series 300
 
-    fn send300(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    fn send300(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send331(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send331(stream: &mut TcpStream) {
+        stream.write_all(b"331 Guest login okay, send your complete email address as your password.\r\n").unwrap();
+        stream.flush().unwrap();
     }
-    
-    fn send332(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send332(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send334(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send334(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send336(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send336(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
 
     //series 400
-    fn send421(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
-    }
-    
-    fn send425(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
-    }
-    
-    fn send426(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
-    }
-    
-    fn send430(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    fn send421(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
 
-    fn send431(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    fn send425(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send434(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send426(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send450(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send430(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send451(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send431(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send452(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send434(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
+
+    fn send450(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    }
+
+    fn send451(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    }
+
+    fn send452(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    }
+
     //series 500
+    fn send500(stream: &mut TcpStream){
+        stream.write_all(b"500 do not try again fucker\r\n").unwrap();
+    }
 
-    fn send501(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    fn send501(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send502(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send502(stream: &mut TcpStream) {
+        stream.write_all(b"502 Command not implemented.\r\n").unwrap();
     }
-    
-    fn send503(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send503(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send504(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send504(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send530(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send530(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send532(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send532(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send533(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send533(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send534(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send534(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send535(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send535(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send536(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send536(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send537(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send537(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send550(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send550(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send551(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send551(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send552(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send552(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send553(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send553(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
+
     //series 600
 
-    fn send600(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+    fn send600(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send631(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send631(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send632(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send632(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
-    fn send633(stream: &mut TcpStream){
-        stream.write(b"110 MARK yyyy = mmmm\r\n").unwrap();
+
+    fn send633(stream: &mut TcpStream) {
+        stream.write_all(b"110 MARK yyyy = mmmm\r\n").unwrap();
     }
-    
+
     //new commands
 }
 
-trait SendData {
-
-}
+trait SendData {}
 
 //what this project is, i want this to be a ftp file server for windows
 // initial MVP:
@@ -294,26 +333,33 @@ trait SendData {
 impl RustTP {
     pub fn new_with_paths(path_list: Vec<String>) -> Arc<Self> {
         let toc = TcpListener::bind("0.0.0.0:21").unwrap();
-        let rs = Arc::new(RustTP {server_con: toc, client_addrs: Mutex::new(HashMap::new())});
+        let rs = Arc::new(RustTP {
+            server_con: toc,
+            client_addrs: Mutex::new(HashMap::new()),
+            directories: Arc::new(path_list),
+        });
         rs.clone().start_event_loop();
         rs
     }
 
     pub fn new() -> Arc<Self> {
-        let toc = TcpListener::bind("0.0.0.0:21").unwrap();
-        let rs = Arc::new(RustTP {server_con: toc, client_addrs: Mutex::new(HashMap::new())});
+        let toc = TcpListener::bind("192.168.0.11:21").unwrap();
+        let rs = Arc::new(RustTP {
+            server_con: toc,
+            client_addrs: Mutex::new(HashMap::new()),
+            directories: Arc::new(Vec::new()),
+        });
         rs.clone().start_event_loop();
         rs
     }
 
-
-    fn start_event_loop(self: Arc<Self>){
+    fn start_event_loop(self: Arc<Self>) {
         thread::spawn(move || {
             while let Ok(t) = self.server_con.accept() {
                 let stream = t.0;
                 let addr = t.1;
                 println!("new client connected with {:?}", addr);
-                let client = Client::new(addr, stream);
+                let client = Client::new(addr, stream, self.directories.clone());
                 let mut lock = self.client_addrs.lock().unwrap();
                 lock.insert(addr, client);
                 drop(lock);
@@ -321,29 +367,34 @@ impl RustTP {
         });
     }
 
-    
-
 
 }
 
-impl SendResponse for Client{
-
-}
+impl SendResponse for Client {}
 
 impl Client {
-    fn new(addr: SocketAddr, stream: TcpStream) -> ArcClient{
+    fn new(addr: SocketAddr, stream: TcpStream, dir:  Arc<Vec<String>>) -> ArcClient {
         //loop
-        let s = Arc::new(Client {addr, stream: Mutex::new(stream), datastream: Mutex::new(None)}) ;
+        let s = Arc::new(Client {
+            addr,
+            stream: Mutex::new(stream),
+            datastream: Mutex::new(None),
+            stream_type: StreamType::ASCII,
+            current_path: Arc::new(Mutex::new(String::from("/"))),
+            base_directories: dir,
+            real_path: Arc::new(Mutex::new("/".to_string())),
+        });
         s.clone().start_event_loop();
         return s;
     }
 
-    fn start_event_loop(self: Arc<Self>){
-        let mut buf: [u8; 1000] = [0;1000];
+    fn start_event_loop(self: Arc<Self>) {
+        let mut buf: [u8; 1000] = [0; 1000];
         let mut stream = self.stream.lock().unwrap();
         Client::send220(&mut stream);
+        stream.flush().unwrap();
         let stream = &mut stream;
-        while let Ok(size) = stream.read(&mut buf){
+        while let Ok(size) = stream.read(&mut buf) {
             let data = &buf[..size];
 
             if size == 0 {
@@ -356,107 +407,265 @@ impl Client {
             println!("command received from {:?}: {:?}", self.addr, comm);
             let word = &comm[..4].to_uppercase();
 
-
             match word.as_str() {
                 "USER" => {
+                    Client::send331(stream);
+                }
+                "PASS" => {
                     Client::send230(stream);
-                },
-                "PASS" => {},
-                "ACCT" => {},
+                }
+                "ACCT" => {}
                 "CWD " => {
+                    let s = comm[4..].trim().to_string();
+                    let mut iter = s.split("/");
+                    let firstDir = iter.next().unwrap();
+                    if let Some(found) = self.base_directories.iter().find(|string| {
+                        string.split("/").last().unwrap() == firstDir
+                    }){
+                        let mut l2k = self.real_path.lock().unwrap();
+                        *l2k = found.to_owned().to_owned() + "/" + &iter.map(|d| d.to_owned() + "/").collect::<String>();
+                        println!("real path is {l2k}");
+                    } else {
+                        let mut l2k = self.real_path.lock().unwrap();
+                        *l2k = "/".to_string();
+                        println!("real path is /");
+                    }
+                
+                    let mut lock = self.current_path.lock().unwrap();
+                    let mut clone = s.clone();
+                    if !clone.starts_with("/"){
+                        clone.insert(0, '/');
+                    }
+                    println!("{clone} : os the new directory");
+                    *lock = clone;
                     Client::send200(stream);
-                },
-                "CDUP" => {},
-                "SMNT" => {},
-                "QUIT" => {},
-                "REIN" => {},
-                "PORT" => {},
+                }
+                "CDUP" => {}
+                "SMNT" => {}
+                "QUIT" => {}
+                "REIN" => {}
+                "PORT" => {
+                    let args = comm[4..].trim();
+                    self.clone().handle_active(args);
+                    Client::send226(stream);
+                }
                 "PASV" => {
                     self.clone().handle_pasv(stream);
-                },
+                }
                 "TYPE" => {
                     Client::send200(stream);
-                },
-                "STRU" => {},
-                "MODE" => {},
+                }
+                "STRU" => {}
+                "MODE" => {}
                 "RETR" => {
                     Client::send150(stream);
-                    let data = "hello hello testbytes".as_bytes();
-                    self.clone().send_rudimentary_data(data);
+                    let args =  comm[4..].trim();
+                    self.clone().send_from_buffered(args);
                     Client::send226(stream);
-                },
-                "STOR" => {},
-                "STOU" => {},
-                "APPE" => {},
-                "ALLO" => {},
-                "REST" => {},
-                "RNFR" => {},
-                "RNTO" => {},
-                "ABOR" => {},
-                "DELE" => {},
-                "RMD " => {},
-                "MKD " => {},
+                }
+                "STOR" => {}
+                "STOU" => {}
+                "APPE" => {}
+                "ALLO" => {}
+                "REST" => {}
+                "RNFR" => {}
+                "RNTO" => {}
+                "ABOR" => {}
+                "DELE" => {}
+                "RMD " => {}
+                "MKD " => {}
                 "PWD\r" => {
-                    Client::send257(stream, "C:/Users/Downloads".to_string());
-                },
+                    let path = self.current_path.lock().unwrap();
+                    Client::send257(stream, path.clone());
+                }
                 "LIST" => {
                     Client::send150(stream);
                     //send directory data over coolstreams
                     self.clone().sendDirectoryInfo();
                     Client::send226(stream);
-
-                },
-                "NLST" => {},
+                }
+                "NLST" => {}
                 "SITE" => {
                     Client::send502(stream);
+                }
+                "SYST" => {
+                    Client::send215(stream);
+
+                }
+                "STAT" => {
+                    Client::send502(stream);
+                }
+                "HELP" => {}
+                "NOOP" => {
+                    Client::send200(stream);
+                }
+                "OPTS" => {
+                    Client::send200(stream);
+                }
+                "FEAT" => {
+                    Client::send211(stream);
                 },
-                "SYST" => {Client::send215(stream);},
-                "STAT" => {},
-                "HELP" => {},
-                "NOOP" => {Client::send200(stream);},
-                "OPTS" => {Client::send200(stream);},
-                _ => Client::send502(stream),
+                "EPSV" => {
+                    if size > 6{
+                        Client::send200(stream);
+                    } else {
+                        self.clone().handle_epsv(stream);
+                    }                    
+                }
+                _ => {
+                    println!("command was not parsed: {comm}");
+                    Client::send500(stream)
+                },
             }
         }
     }
 
-    fn sendDirectoryInfo(self: Arc<Self>){
+    fn sendDirectoryInfo(self: Arc<Self>) {
         let mut lock = self.datastream.lock().unwrap();
+        let curr = self.current_path.lock().unwrap().clone();
+        let mut ls_list: String = String::new();
+        if curr == "/" {
+            //print everything in top directories list.
+            ls_list = self.base_directories.iter().map(|dir| {
+                let metadata = metadata(dir).unwrap();
+                let filetype = if (metadata.is_dir()) {'d'} else {'-'};
+                let file_size = metadata.file_size();
+                let last_edited = metadata.last_write_time();
+
+                let name = Path::file_name(Path::new(dir)).unwrap().to_str().unwrap();
+                let links = if metadata.is_dir() {2} else {1};
+                //let permissions = if metadata.is_dir() {"drwxr-xr-x"} else {"rw-r--r--"};
+                format!("{filetype}rw-r--r-- {links} user group {file_size} Oct 1 10:00 {name}\r\n")
+            }).collect::<String>();
+        } else {
+            let realpath = self.real_path.lock().unwrap().clone();
+            println!("path given is {realpath}");
+            let entries = fs::read_dir(realpath).unwrap();
+            ls_list = entries.map(|entry| {
+                get_file_info(&entry.unwrap())
+            }).collect::<String>();
+    
+        }
+
+        //println!("directory {curr} list of stuff {:?}",ls_list);
 
         if let Some(mut stream) = lock.take() {
-            stream.write(b"-rw-r--r--  1 user group  21 Oct  1 10:00 example.py\r\n").unwrap();
+            stream.write_all(ls_list.as_bytes()).unwrap();
             stream.flush().unwrap();
+        } else {
         }
         drop(lock);
         self.clone().close_data_stream();
     }
-
-    fn close_data_stream(self: Arc<Self>){
+    fn handle_epsv(self: Arc<Self>, stream: &mut TcpStream){
+        let list = Client::send229(stream);
+        println!("stream: started waiting onconnection {:?}",list);
+        let clie = list.accept().unwrap();
+        println!("stream: accepted connection at {:?}", clie.1);
+        self.datastream.lock().unwrap().replace(clie.0);
+    }
+    fn close_data_stream(self: Arc<Self>) {
         let mut lock = self.datastream.lock().unwrap();
         if lock.is_some() {
-            lock.take();
+            drop(lock.take());
         }
     }
-    
-    fn send_rudimentary_data(self: Arc<Self>, data: &[u8]){
+
+    fn send_rudimentary_data(self: Arc<Self>, data: &[u8]) {
         let mut lock = self.datastream.lock().unwrap();
         if let Some(mut stream) = lock.take() {
-            stream.write(&data).unwrap();
+            stream.write_all(&data).unwrap();
         }
         drop(lock);
 
         self.clone().close_data_stream();
     }
 
+    fn send_from_buffered(self: Arc<Self>, file_name: &str) {
 
-    fn handle_pasv(self: Arc<Self>,stream: &mut TcpStream){
-       let list = Client::send227(stream);
-       println!("stream: started waiting onconnection");
-        let mut clie = list.accept().unwrap();
-        println!("stream: accepted connection at {:?}",clie.1);
+        let currdir = self.real_path.lock().unwrap().clone();
+
+        let top_most = file_name.split("/").next().unwrap();
+
+        let real = self.base_directories.iter().find(|e| {
+            let bot_most = e.split("/").last().unwrap();
+            bot_most.trim() == top_most
+        });
+
+        
+        let mut ite = file_name.split("/").into_iter();
+        ite.next();
+        let relpath = real.unwrap().to_owned() + "/" + &ite.map(|e| e.to_owned() + "/").collect::<String>();
+        let s = real.unwrap();
+        println!("path foudn now :{} given {s}", relpath);
+        
+        let file = File::open(relpath.trim()).unwrap();
+        let mut buffer = vec![0u8; 8192]; // Define a buffer of size 8 KB
+        let mut reader = BufReader::new(file);
+        let mut lock = self.datastream.lock().unwrap();
+        if let Some(mut stream) = lock.take() {
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break, // EOF reached
+                    Ok(bytes_read) => {
+                        stream.write_all(&buffer[..bytes_read]).unwrap();
+                    }
+                    Err(e) => {
+                        eprintln!("Error reading file: {}", e);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_pasv(self: Arc<Self>, stream: &mut TcpStream) {
+        let list = Client::send227(stream);
+        println!("stream: started waiting onconnection {:?}",list);
+        let clie = list.accept().unwrap();
+        println!("stream: accepted connection at {:?}", clie.1);
         self.datastream.lock().unwrap().replace(clie.0);
         //setConnection create field in Client, mutex<listner>.
     }
 
+    fn handle_active(self: Arc<Self>, addrstr: &str) {
+        let numbers: Vec<&str> = addrstr.split(",").collect();
+        let port = numbers[4].parse::<i32>().unwrap() * 256 + numbers[5].parse::<i32>().unwrap();
+        let ip = numbers[..4].join(".");
+        println!("active add given: {}:{}", ip, port);
+        let stream = TcpStream::connect(format!("{}:{}", ip, port)).unwrap();
+        self.datastream.lock().unwrap().replace(stream);
+    }
+}
 
+
+impl Drop for Client {
+    fn drop(&mut self) { 
+        println!("client dropped");
+     }
+}
+
+fn get_file_info(entry: &DirEntry) -> String {
+    let metadata = entry.metadata().unwrap();
+    
+    // File permissions
+    let permissions = metadata.permissions();
+    let links = if metadata.is_dir() {2} else {1};
+    let filetype = if (metadata.is_dir()) {'d'} else {'-'};
+    // File size
+    let file_size = metadata.len();
+    let binding = entry.path().display().to_string();
+    let name = binding.split("/").last().unwrap();
+    let name =  name.split("\\").last().unwrap();
+    println!("{} interpreted",name);
+
+    
+    // Last modified time
+    let modified_time = metadata.modified().unwrap_or(UNIX_EPOCH)
+        .duration_since(UNIX_EPOCH).unwrap()
+        .as_secs();
+    let s = format!(
+        "{filetype}rw-r--r-- {links} user group {file_size} Oct 1 10:00 {name}\r\n"
+    );
+    s
 }
