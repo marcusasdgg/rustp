@@ -22,6 +22,7 @@ pub struct RustTP {
     //this is a list of top directorys which comprise the / directory of the fs,
     directories: Arc<Vec<String>>,
     client_addrs: Mutex<HashMap<SocketAddr, ArcClient>>,
+    add: Arc<String>,
 }
 
 struct Client {
@@ -32,6 +33,7 @@ struct Client {
     current_path: Arc<Mutex<String>>,
     real_path: Arc<Mutex<String>>,
     base_directories:  Arc<Vec<String>>,
+    add: Arc<String>,
 }
 
 enum StreamType {
@@ -111,7 +113,7 @@ trait SendResponse {
         stream.flush().unwrap();
     }
 
-    fn send227(stream: &mut TcpStream) -> TcpListener {
+    fn send227(stream: &mut TcpStream, addr: String) -> TcpListener {
         let listener = TcpListener::bind("0.0.0.0:0").unwrap(); // 0.0.0.0 binds to any available IP on a random port
 
         let port = listener.local_addr().unwrap().port(); // Get the randomly assigned port
@@ -119,11 +121,13 @@ trait SendResponse {
         // Convert the port to the format required by PASV (p1, p2)
         let p1 = port / 256;
         let p2 = port % 256;
+        println!("ad {addr}");
+        let ad: Vec<String> = addr.clone().split(".").map(|e| e.to_string()).collect();
 
         let binding = listener.local_addr().unwrap().ip().to_string();
         let vec: Vec<&str> = binding.split(".").collect();
 
-        let str = format!("227 Entering Passive Mode (192,168,0,11,{},{})\r\n", p1, p2);
+        let str = format!("227 Entering Passive Mode ({},{},{},{},{},{})\r\n", ad[0],ad[1],ad[2],ad[3],p1, p2);
         //vec[0], vec[1], vec[2],vec[3]
         println!("port is {port}");
 
@@ -331,23 +335,25 @@ trait SendData {}
 //anonymous no auth check
 
 impl RustTP {
-    pub fn new_with_paths(path_list: Vec<String>) -> Arc<Self> {
+    pub fn new_with_paths(path_list: Vec<String>,address: &str) -> Arc<Self> {
         let toc = TcpListener::bind("0.0.0.0:21").unwrap();
         let rs = Arc::new(RustTP {
             server_con: toc,
             client_addrs: Mutex::new(HashMap::new()),
             directories: Arc::new(path_list),
+            add: Arc::new(address.to_owned())
         });
         rs.clone().start_event_loop();
         rs
     }
 
-    pub fn new() -> Arc<Self> {
-        let toc = TcpListener::bind("192.168.0.11:21").unwrap();
+    pub fn new(address: &str) -> Arc<Self> {
+        let toc = TcpListener::bind(address.to_owned() + ":21").unwrap();
         let rs = Arc::new(RustTP {
             server_con: toc,
             client_addrs: Mutex::new(HashMap::new()),
             directories: Arc::new(Vec::new()),
+            add: Arc::new(address.to_owned())
         });
         rs.clone().start_event_loop();
         rs
@@ -359,7 +365,7 @@ impl RustTP {
                 let stream = t.0;
                 let addr = t.1;
                 println!("new client connected with {:?}", addr);
-                let client = Client::new(addr, stream, self.directories.clone());
+                let client = Client::new(addr, stream, self.directories.clone(), self.add.clone());
                 let mut lock = self.client_addrs.lock().unwrap();
                 lock.insert(addr, client);
                 drop(lock);
@@ -373,8 +379,9 @@ impl RustTP {
 impl SendResponse for Client {}
 
 impl Client {
-    fn new(addr: SocketAddr, stream: TcpStream, dir:  Arc<Vec<String>>) -> ArcClient {
+    fn new(addr: SocketAddr, stream: TcpStream, dir:  Arc<Vec<String>>, ad: Arc<String>) -> ArcClient {
         //loop
+        println!("ad: {ad}");
         let s = Arc::new(Client {
             addr,
             stream: Mutex::new(stream),
@@ -383,6 +390,7 @@ impl Client {
             current_path: Arc::new(Mutex::new(String::from("/"))),
             base_directories: dir,
             real_path: Arc::new(Mutex::new("/".to_string())),
+            add: ad
         });
         s.clone().start_event_loop();
         return s;
@@ -621,7 +629,7 @@ impl Client {
     }
 
     fn handle_pasv(self: Arc<Self>, stream: &mut TcpStream) {
-        let list = Client::send227(stream);
+        let list = Client::send227(stream, self.add.clone().to_string());
         println!("stream: started waiting onconnection {:?}",list);
         let clie = list.accept().unwrap();
         println!("stream: accepted connection at {:?}", clie.1);

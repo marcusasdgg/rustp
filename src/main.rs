@@ -1,22 +1,19 @@
-use std::{io::{self, Read, Write}, thread::{self, sleep}, time::Duration};
-use rustp::RustTP;
+use std::{env, fs::File, io::{self, BufRead, Read, Write}, path::Path, thread::{self, sleep}, time::Duration};
+use rusFTP::RustTP;
 fn main() {
-    let paths: Vec<String> = vec!("C:/Users/marcu/Downloads".to_string(), "C:/Users/marcu/Videos/Desktop".to_string(), "C:/Users/marcu/Videos/Desktop/Desktop 2024.10.18 - 18.42.44.04.DVR.mp4".to_string(), "F:/Anime".to_string());
-    let server = RustTP::new_with_paths(paths);
-    let mut guess = String::new();
+    let args: Vec<String> = env::args().collect();
+    let lines = read_lines("paths.txt").unwrap();
+    let list = lines.flatten().map(|e| e.to_string()).collect::<Vec<String>>();
+    let server = RustTP::new_with_paths(list, &args[1]);
     loop {
-        io::stdin()
-    .read_line(&mut guess).unwrap();
-        match guess.trim() {
-            "clear" => {
-                print!("\x1B[2J\x1B[1;1H");
-                std::io::stdout().flush().unwrap(); 
-            },
-            "exit" => {return;}
-            _ => {println!("not valid");}
-        }
-        guess.clear();
+        
     }
+}
+
+fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
+where P: AsRef<Path>, {
+    let file = File::open(filename)?;
+    Ok(io::BufReader::new(file).lines())
 }
 
 //let s = std::net::TcpListener::bind("0.0.0.0:21").unwrap();

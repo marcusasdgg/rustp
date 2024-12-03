@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "rustp"
+name = "rusFTP"
 version = "0.1.0"
