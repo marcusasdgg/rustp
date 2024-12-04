@@ -1,3 +1,4 @@
+use core::panic;
 use std::env::Args;
 use std::fmt::format;
 use std::fs::{self, metadata, read, DirEntry, File};
@@ -458,7 +459,9 @@ impl Client {
                 }
                 "CDUP" => {}
                 "SMNT" => {}
-                "QUIT" => {}
+                "QUIT" => {
+                    panic!();
+                }
                 "REIN" => {}
                 "PORT" => {
                     let args = comm[4..].trim();
@@ -494,7 +497,11 @@ impl Client {
                 "ABOR" => {}
                 "DELE" => {}
                 "RMD " => {}
-                "MKD " => {}
+                "MKD " => {
+                    let args = comm[4..].trim();
+                    self.clone().create_dir(args);
+                    Client::send200(stream);
+                }
                 "PWD\r" => {
                     let path = self.current_path.lock().unwrap();
                     Client::send257(stream, path.clone());
@@ -547,6 +554,19 @@ impl Client {
         return self.base_directories.iter().find(|dir| {
             dir.split("/").last().unwrap() == name
         }).cloned();
+    }
+
+    fn create_dir(self: Arc<Self>, name: &str){
+        let parsedpath = if name.contains("/") {
+            let mut liter = name.split("/");
+            let top_most = liter.next().unwrap();
+            let path = self.clone().top_dir_to_real_path(top_most).unwrap();
+            let total_path = path + "/" + liter.map(|pat| pat.to_owned() + "/").collect::<String>().as_str();
+            total_path
+        } else {
+            self.root_store.clone().to_string() + "/" + name
+        };
+        fs::create_dir(parsedpath).unwrap();
     }
 
 
@@ -735,3 +755,5 @@ fn get_file_info(entry: &DirEntry) -> String {
     );
     s
 }
+
+//make paths vector editable in runtime for makedir.
