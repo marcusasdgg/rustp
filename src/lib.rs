@@ -581,6 +581,8 @@ impl Client {
             self.root_store.clone().to_string() + "/" + name
         };
 
+        let parsedpath = if parsedpath.ends_with("/") {parsedpath.strip_suffix("/").unwrap().to_string()} else {parsedpath};
+
         println!("path to store file is {}",parsedpath);
         let mut file = File::create(parsedpath).unwrap();
         let mut  reader = self.datastream.lock().unwrap();
