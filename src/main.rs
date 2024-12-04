@@ -2,10 +2,11 @@ use std::{env, fs::File, io::{self, BufRead, Read, Write}, path::Path, thread::{
 use basicftp::RustTP;
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let lines = read_lines("paths.txt").unwrap();
+    let lines = read_lines("path.txt").unwrap();
+    
     let list = lines.flatten().map(|e| e.to_string()).collect::<Vec<String>>();
     //let list = vec!("C:/Users/marcu/Downloads".to_string(), "F:/Anime".to_string(), "C:/Users/marcu/Documents".to_string());
-    let server = RustTP::new_with_paths(list, &args[1]);
+    let server = RustTP::new_with_paths(list, &args[1], &args[2]);
     loop {
         
     }

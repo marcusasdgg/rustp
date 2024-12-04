@@ -1,6 +1,7 @@
+use std::env::Args;
 use std::fmt::format;
-use std::fs::{self, metadata, DirEntry, File};
-use std::io::{BufReader, Read, Write};
+use std::fs::{self, metadata, read, DirEntry, File};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::net::IpAddr;
 use std::os::windows::fs::MetadataExt;
 use std::path::Path;
@@ -23,6 +24,7 @@ pub struct RustTP {
     directories: Arc<Vec<String>>,
     client_addrs: Mutex<HashMap<SocketAddr, ArcClient>>,
     add: Arc<String>,
+    root_store: Arc<String>,
 }
 
 struct Client {
@@ -34,6 +36,7 @@ struct Client {
     real_path: Arc<Mutex<String>>,
     base_directories:  Arc<Vec<String>>,
     add: Arc<String>,
+    root_store: Arc<String>,
 }
 
 enum StreamType {
@@ -335,25 +338,27 @@ trait SendData {}
 //anonymous no auth check
 
 impl RustTP {
-    pub fn new_with_paths(path_list: Vec<String>,address: &str) -> Arc<Self> {
+    pub fn new_with_paths(path_list: Vec<String>,address: &str, root_store: &str) -> Arc<Self> {
         let toc = TcpListener::bind("0.0.0.0:21").unwrap();
         let rs = Arc::new(RustTP {
             server_con: toc,
             client_addrs: Mutex::new(HashMap::new()),
             directories: Arc::new(path_list),
-            add: Arc::new(address.to_owned())
+            add: Arc::new(address.to_owned()),
+            root_store: Arc::new(root_store.to_owned()),
         });
         rs.clone().start_event_loop();
         rs
     }
 
-    pub fn new(address: &str) -> Arc<Self> {
+    pub fn new(address: &str,root_store: &str) -> Arc<Self> {
         let toc = TcpListener::bind(address.to_owned() + ":21").unwrap();
         let rs = Arc::new(RustTP {
             server_con: toc,
             client_addrs: Mutex::new(HashMap::new()),
             directories: Arc::new(Vec::new()),
-            add: Arc::new(address.to_owned())
+            add: Arc::new(address.to_owned()),
+            root_store: Arc::new(root_store.to_owned()),
         });
         rs.clone().start_event_loop();
         rs
@@ -365,7 +370,7 @@ impl RustTP {
                 let stream = t.0;
                 let addr = t.1;
                 println!("new client connected with {:?}", addr);
-                let client = Client::new(addr, stream, self.directories.clone(), self.add.clone());
+                let client = Client::new(addr, stream, self.directories.clone(), self.add.clone(), self.root_store.clone());
                 let mut lock = self.client_addrs.lock().unwrap();
                 lock.insert(addr, client);
                 drop(lock);
@@ -379,7 +384,7 @@ impl RustTP {
 impl SendResponse for Client {}
 
 impl Client {
-    fn new(addr: SocketAddr, stream: TcpStream, dir:  Arc<Vec<String>>, ad: Arc<String>) -> ArcClient {
+    fn new(addr: SocketAddr, stream: TcpStream, dir:  Arc<Vec<String>>, ad: Arc<String>, root_store: Arc<String>) -> ArcClient {
         //loop
         println!("ad: {ad}");
         let s = Arc::new(Client {
@@ -390,7 +395,8 @@ impl Client {
             current_path: Arc::new(Mutex::new(String::from("/"))),
             base_directories: dir,
             real_path: Arc::new(Mutex::new("/".to_string())),
-            add: ad
+            add: ad,
+            root_store
         });
         s.clone().start_event_loop();
         return s;
@@ -403,7 +409,7 @@ impl Client {
         Client::send220(&mut stream);
         stream.flush().unwrap();
         let stream = &mut stream;
-        stream.set_read_timeout(Some(Duration::new(10, 0))).unwrap();
+        stream.set_read_timeout(Some(Duration::new(200, 0))).unwrap();
         while let Ok(size) = stream.read(&mut buf) {
             let data = &buf[..size];
 
@@ -473,7 +479,12 @@ impl Client {
                     self.clone().send_from_buffered(args);
                     Client::send226(stream);
                 }
-                "STOR" => {}
+                "STOR" => {
+                    Client::send150(stream);
+                    let args = comm[4..].trim();
+                    self.clone().receive_file(args);
+                    Client::send226(stream);
+                }
                 "STOU" => {}
                 "APPE" => {}
                 "ALLO" => {}
@@ -530,6 +541,48 @@ impl Client {
         }
         });
         
+    }
+
+    fn top_dir_to_real_path(self: Arc<Self>, name: &str) -> Option<String>{
+        return self.base_directories.iter().find(|dir| {
+            dir.split("/").last().unwrap() == name
+        }).cloned();
+    }
+
+
+    fn receive_file(self: Arc<Self>,name: &str){
+        let parsedpath = if name.contains("/") {
+            let mut liter = name.split("/");
+            let top_most = liter.next().unwrap();
+            let path = self.clone().top_dir_to_real_path(top_most).unwrap();
+            let total_path = path + "/" + liter.map(|pat| pat.to_owned() + "/").collect::<String>().as_str();
+            total_path
+        } else {
+            self.root_store.clone().to_string() + "/" + name
+        };
+
+        println!("path to store file is {}",parsedpath);
+        let mut file = File::create(parsedpath).unwrap();
+        let mut  reader = self.datastream.lock().unwrap();
+        let mut buffer = [0u8;32000];
+
+        println!("startng reading process");
+        if let Some(mut reeder) = reader.take() {
+            reeder.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            println!("set timeout");
+            while let Ok(size) = reeder.read(&mut buffer) {
+                if size == 0{
+                    println!("file contents finished.");
+                    break;
+                }
+                let data = &buffer[..size];
+                println!("buffer ereceievedf");
+                file.write(data).unwrap();
+            }
+        }else {
+            println!("reader was empty?");
+        }
+ 
     }
 
     fn sendDirectoryInfo(self: Arc<Self>) {
