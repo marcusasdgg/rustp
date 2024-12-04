@@ -4,7 +4,6 @@ use std::fmt::format;
 use std::fs::{self, metadata, read, DirEntry, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::net::IpAddr;
-use std::os::windows::fs::MetadataExt;
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -615,10 +614,8 @@ impl Client {
             //print everything in top directories list.
             ls_list = self.base_directories.iter().map(|dir| {
                 let metadata = metadata(dir).unwrap();
-                let filetype = if (metadata.is_dir()) {'d'} else {'-'};
-                let file_size = metadata.file_size();
-                let last_edited = metadata.last_write_time();
-
+                let filetype = if metadata.is_dir() {'d'} else {'-'};
+                let file_size = metadata.len();
                 let name = Path::file_name(Path::new(dir)).unwrap().to_str().unwrap();
                 let links = if metadata.is_dir() {2} else {1};
                 //let permissions = if metadata.is_dir() {"drwxr-xr-x"} else {"rw-r--r--"};
