@@ -7,7 +7,7 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::thread::sleep;
+use std::thread::{sleep, JoinHandle};
 use std::time::{Duration, UNIX_EPOCH};
 use std::{
     collections::HashMap,
@@ -338,7 +338,7 @@ trait SendData {}
 //anonymous no auth check
 
 impl RustTP {
-    pub fn new_with_paths(path_list: Vec<String>,address: &str, root_store: &str) -> Arc<Self> {
+    pub fn new_with_paths(path_list: Vec<String>,address: &str, root_store: &str) ->(Arc<Self>, JoinHandle<()>) {
         let toc = TcpListener::bind("0.0.0.0:21").unwrap();
         let rs = Arc::new(RustTP {
             server_con: toc,
@@ -347,11 +347,11 @@ impl RustTP {
             add: Arc::new(address.to_owned()),
             root_store: Arc::new(root_store.to_owned()),
         });
-        rs.clone().start_event_loop();
-        rs
+        let t= rs.clone().start_event_loop();
+        (rs,t)
     }
 
-    pub fn new(address: &str,root_store: &str) -> Arc<Self> {
+    pub fn new(address: &str,root_store: &str) -> (Arc<Self>, JoinHandle<()>) {
         let toc = TcpListener::bind(address.to_owned() + ":21").unwrap();
         let rs = Arc::new(RustTP {
             server_con: toc,
@@ -360,11 +360,11 @@ impl RustTP {
             add: Arc::new(address.to_owned()),
             root_store: Arc::new(root_store.to_owned()),
         });
-        rs.clone().start_event_loop();
-        rs
+        let t = rs.clone().start_event_loop();
+        (rs,t)
     }
 
-    fn start_event_loop(self: Arc<Self>) {
+    fn start_event_loop(self: Arc<Self>) -> JoinHandle<()> {
         thread::spawn(move || {
             while let Ok(t) = self.server_con.accept() {
                 let stream = t.0;
@@ -375,7 +375,7 @@ impl RustTP {
                 lock.insert(addr, client);
                 drop(lock);
             }
-        });
+        })
     }
 
 
@@ -410,6 +410,7 @@ impl Client {
         stream.flush().unwrap();
         let stream = &mut stream;
         stream.set_read_timeout(Some(Duration::new(200, 0))).unwrap();
+        stream.set_nonblocking(false).unwrap();
         while let Ok(size) = stream.read(&mut buf) {
             let data = &buf[..size];
 
@@ -545,6 +546,7 @@ impl Client {
                 },
             }
         }
+        println!("erorred out");
         });
         
     }

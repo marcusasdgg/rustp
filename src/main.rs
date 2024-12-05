@@ -6,11 +6,9 @@ fn main() {
     
     let list = lines.flatten().map(|e| e.to_string()).collect::<Vec<String>>();
     //let list = vec!("C:/Users/marcu/Downloads".to_string(), "F:/Anime".to_string(), "C:/Users/marcu/Documents".to_string());
-    let server = RustTP::new_with_paths(list, &args[1], &args[2]);
-    loop {
-        
-    }
-}
+    let (server,thread) = RustTP::new_with_paths(list, &args[1], &args[2]);
+    thread.join().unwrap();
+}   
 
 fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
 where P: AsRef<Path>, {
