@@ -7,6 +7,7 @@
     - basic file storage.
     - folder creation on server.
     - OS agnostic
+    - blocking network calls
 [getting started]
 - 
 Use Cargo to build a release i.e cargo build -r then copy paste the .exe into a directory of your choosing and place a paths.txt file in the directory as well. This directory will contain the absolute paths of files that ftp can access separated by a newline.

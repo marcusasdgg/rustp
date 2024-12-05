@@ -1,6 +1,6 @@
 [package]
 name = "basicftp"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 description = "A Basic library for FTP using Std::net supporting EPSV and basic features as well as read only non authenticated, non-encrypted text based traffic"
 license = "MIT"
