@@ -433,12 +433,14 @@ impl Client {
                 }
                 "ACCT" => {}
                 "CWD " => {
+                    //check if this directory
                     let s = comm[4..].trim().to_string();
                     let mut iter = s.split("/");
                     let firstDir = iter.next().unwrap();
                     if let Some(found) = self.base_directories.iter().find(|string| {
                         string.split("/").last().unwrap() == firstDir
                     }){
+                        println!("found a base directory {found}");
                         let mut l2k = self.real_path.lock().unwrap();
                         *l2k = found.to_owned().to_owned() + "/" + &iter.map(|d| d.to_owned() + "/").collect::<String>();
                         println!("real path is {l2k}");
@@ -474,7 +476,9 @@ impl Client {
                 "TYPE" => {
                     Client::send200(stream);
                 }
-                "STRU" => {}
+                "STRU" => {
+                    Client::send200(stream);
+                }
                 "MODE" => {}
                 "RETR" => {
                     Client::send150(stream);
@@ -758,3 +762,4 @@ fn get_file_info(entry: &DirEntry) -> String {
 }
 
 //make paths vector editable in runtime for makedir.
+
